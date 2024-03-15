@@ -1,0 +1,85 @@
+;;;; Fields
+proto -v -l -c "1"
+proto -v -l -c "(orange)"
+proto -v -l -c "(+ 1 (orange))"
+
+;;;; Space & Time operations
+proto -v -l -c "(rep t 0 (+ t (dt)))"
+proto -v -l -c "(all (def timer () (rep t 0 (+ t (dt)))) (timer))"
+proto -v -l -c "(where (orange) (timer) 0)"
+proto -v -l -c "(red (any-hood (nbr (orange))))"
+proto -v -l -c "(min-hood+ (nbr-range))"
+
+;;;; Neighborhood chaining 
+proto -v -l -c "(red (rep d (inf) (mux (orange) 0 (min-hood (+ (nbr-range) (nbr d))))))"
+
+(def gradient (src)
+  (1st (rep (tup d v) (tup (inf) 0)
+	(mux src (tup 0 0)		; source
+	  (mux (max-hood+
+		(<= (+ (nbr d) (nbr-range) (* v (+ (nbr-lag) (dt)))) d))
+	    (tup (min-hood+ (+ (nbr d) (nbr-range))) 0)
+	    (let ((v0 (/ (radio-range) (* (dt) 12))))
+	      (tup (+ d (* v0 (dt))) v0)))))))
+
+proto -n 1000 -s 0.1 -v -l "(red (gradient (orange)))"
+proto -n 1000 -s 0.1 -v -l "(red (+ (gradient (orange)) (gradient (purple))))"
+
+(def gradcast (src f)
+  (let ((d (gradient src)))
+    (letfed ((v f (mux src f (2nd (fold-hood 
+                                    (fun (r x) (if (< (1st x) (1st r)) x r)) 
+                                    (tup (inf) f)
+                                    (tup d v))))))
+      v)))
+
+proto -v -l -c -n 200 -s 0.1 "(red (gradcast (orange) (purple)))"
+
+;;;; Geometric programming
+(def distance (p1 p2)
+  (gradcast p1 (gradient p2)))
+
+proto -v -l -c -n 200 -s 0.1 "(distance (orange) (purple))"
+
+proto -v -l -c -n 200 -s 0.1 "(red (<= (+ (gradient (orange)) (gradient (purple))) (+ (distance (orange) (purple)) 0.01)))"
+
+(def dilate (src n) 
+  (<= (gradient src) n)) 
+
+proto -v -l -n 1000 -s 0.1 "(red (dilate (orange) 30))"
+
+(def channel (src dst width)
+  (let* ((d     (distance src dst))
+         (trail (<= (+ (gradient src) (gradient dst)) (+ d 0.01))) ;; float error
+         )
+    (dilate trail width)))
+
+proto -v -l -n 1000 -s 0.1 "(red (channel (orange) (purple) 10))"
+
+;;;; Motion
+
+proto -sv -l -m "(mov (tup 4 1))"
+
+(def dither ()
+  (letfed ((s 0 (min 25 (abs (+ s (rnd -1 1)))))
+           (a (norm 1 (tup (rnd -1 1) (rnd -1 1) (rnd -1 1)))
+              (norm 1 (+ a (tup (rnd -0.1 0.1) (rnd -0.1 0.1) (rnd -0.1 0.1))))))
+    (* s a)))
+
+proto -sv -l -m "(mov (dither))"
+
+(def track (target dst coord)
+  (if (channel target dst 10)
+    (all (blue 1)
+     (mux dst (- (gradcast target coord) coord) (tup 0 0 0)))
+    (tup 0 0 0)))
+
+(def track-demo ()
+   (all 
+    (let ((mobile (once (< (rnd 0 1) 0.5))))
+      (mov (* (if (or (orange) (or (purple) mobile)) 0.01 0) (dither))))
+    (track (orange) (purple) (coord))))
+
+proto -n 150 -r 15 -sv -l -m -w -s 0.1 "(track-demo)"
+proto -n 500 -r 15 -sv -l -m -w -s 0.5 "(track-demo)"
+proto -n 2000 -r 5 -sv -l -m -w -s 1.0 "(track-demo)"

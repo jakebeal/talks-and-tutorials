@@ -1,0 +1,132 @@
+;;;; INTRO PROGRAM
+proto "(growf (= (mid) 0) 0)" -m -s 0.1 -n 10 -rad 2 -dim 500 500 -dist-dim -5 5 -5 5 -l -sv -fixedpt 0 0
+
+;;;; CHANNEL EXAMPLE
+(def channel (src dst width)
+  (let* ((d     (distance src dst))
+         (trail (<= (+ (gradient src) (gradient dst)) (+ d 0.01))) ;; float error
+         )
+    (dilate trail width)))
+
+proto -l -n 1000 -s 0.1 "(blue (channel (sense 1) (sense 2) 10))"
+
+
+;;;; SCALABILITY: TARGET TRACKING
+(def track (target dst coord)
+  (if (channel target dst 10)
+    (all (blue 1)
+     (mux dst (- (gradcast target coord) coord) (tup 0 0 0)))
+    (tup 0 0 0)))
+
+(def track-demo ()
+   (all 
+    (let ((mobile (once (< (rnd 0 1) 0.5))))
+      (mov (* (if (or (sense 1) (or (sense 2) mobile)) 0.01 0) (dither))))
+    (track (sense 1) (sense 2) (coord))))
+
+proto -n 150 -r 15 -sv -l -m -w -s 0.1 "(track-demo)"
+proto -n 500 -r 15 -sv -l -m -w -s 0.5 "(track-demo)"
+proto -n 2000 -r 5 -sv -l -m -w -s 1.0 "(track-demo)"
+
+
+;;;; ROBUSTNESS: SELF-STABILIZING DISTANCE ESTIMATE
+(def distance-to (source)
+  (1st 
+    (rep (tup d v)                      ; d = distance estimate, v = value rising
+         (tup (inf) 0)                  ; initial value
+      (mux source 
+        (tup 0 0)                       ; source is always distance zero
+        (mux (max-hood+                 ; test whether to apply constraint
+               (<= (+ (nbr d) (nbr-range) (* v (+ (nbr-lag) (dt)))) d))
+          (tup (min-hood+ (+ (nbr d) (nbr-range))) 0) ; apply triangle inequality
+          (let ((v0 (/ (comm-range) (* (dt) 12))))    ; rise rate based on info speed
+            (tup (+ d (* v0 (dt))) v0)))))))
+
+proto -n 1000 -s 0.1 -v -l "(red (distance-to (sense 1)))"
+; Change the source location: note the self-healing...
+
+;;;; COMPOSITION: NAV-GRAD + DISPERSE
+
+;; Nav-grad
+(def share-distance-to (is-calculating source)
+  (let ((base (if is-calculating (distance-to source) (inf))))
+    (mux is-calculating base (min-hood (+ (nbr-range) (nbr base))))))
+
+(def nav-grad (is-mover source)
+  (let ((g (grad (share-distance-to (not is-mover) source))))
+    (mux (and is-mover (> (len g) 0)) (normalize g) (tup 0 0))))
+
+proto -n 500 -r 15 -m -l -s 0.1 -sv "(mov (let ((which (random-subset 0.05))) (nav-grad (blue which) (sense 1))))" -led-stacking 2
+proto -n 500 -r 15 -m -l -s 0.1 -sv "(mov (let ((which (random-subset 0.2))) (nav-grad (blue which) (sense 1))))" -led-stacking 2
+
+
+;; Disperse
+(def disperse ()
+  (* (/ 1 (int-hood 1))                                ; normalize for neighborhood size
+     (int-hood (* (- (nbr-range) (* 0.9 (comm-range))) ; integrate distance from fixed-point...
+                  (normalize (nbr-vec))))))            ; ... times direction to neighbor
+proto -sv -l -m -act-err 0.1 "(mov (disperse))" -s 0.1 -dim 100 100 -r 20 -n 100 -w
+proto -sv -l -m -act-err 0.1 "(mov (disperse))" -s 0.1 -dim 100 100 -r 20 -n 300 -w
+proto -sv -l -m -act-err 0.1 "(mov (disperse))" -s 0.1 -dim 100 100 -r 10 -n 1000 -w
+; Draw a group of robots elsewhere: note the self-healing...
+
+
+;; Combined:
+proto -n 500 -r 15 -m -l -s 0.1 -sv "(mov (let ((which (random-subset 0.2))) (+ (if which (disperse) (tup 0 0)) (nav-grad (blue which) (sense 1)))))" -led-stacking 2
+
+
+
+;;;; MORPHOGENETIC ENGINEERING
+
+;; Cell Density maintenance
+(def cell-density (grow shrink p)
+  (let ((packing (num-nbrs)))
+    (clone (and grow (and (< packing 8) (< (rnd 0 1) p))))
+    (die (or (and (> packing 15) (< (rnd 0 1) p))
+    	        (and shrink (< (rnd 0 1) p)))))
+  (disperse2 9)) ;; of default 15 radius
+
+proto "(mov (cell-density 1 0 0.1))" -m -s 0.1 -n 10 -rad 2 -dim 500 500 -dist-dim -5 5 -5 5 -l
+
+;; Vascularization
+(def vascularize (source serv-range p)
+  (rep (tup vessel served parent)
+       (tup source source (if source (mid) -1))
+       (mux source
+	    (tup 1 1 -1)
+	    (let ((service (< (gradient vessel) serv-range))
+		   (server (gradcast vessel (mid)))
+		   (children (sum-hood (= (mid) (nbr parent))))
+		   (total-children (tree-children parent)))
+	      (radius-set (mux vessel (* 0.5 (sqrt (+ 1 total-children))) 2))
+              ;; grow/shrink vessel network
+	      (mux vessel
+		   (mux (or (muxand (any-hood (and (= (nbr (mid)) parent)
+						   (> (nbr children) (mux (nbr source) 6 3))))
+				    (not (any-hood (< (nbr total-children) total-children))))
+			    (not (any-hood (and (nbr vessel) (= (nbr (mid)) parent)))))
+			(tup 0 1 -1)	; vessel is discarded
+			(tup 1 1 parent)) ; vessels stay fixed
+		   (mux (or (sense 2) (muxand (muxand (any-hood (nbr vessel))
+					(dilate (not served) serv-range))
+				(< (rnd 0 1) p)))
+			(tup 1 1 server)
+			(tup 0 service -1)))))))
+
+proto "(drawvasc (vascularize (= (mid) 0) 50 0.02))" -n 1000 -dim 300 300 -l -s 0.1 -sv -fixedpt 0 0 -m
+
+;; Combined into regulated tissue growth:
+(def tissue (src pd pv)
+  (let ((v (vascularize src 50 pv)))
+    (if (not src) (mov (cell-density (2nd v) 0 pd)) (tup 0 0 0))
+    (drawvasc v)))
+
+proto "(tissue (= (mid) 0) 0.1 0.02)" -m -s 0.1 -n 10 -rad 2 -dim 300 300 -dist-dim -5 5 -5 5 -l -sv -fixedpt 0 0
+
+;; Modulated shape growth:
+proto "(growf (= (mid) 0) 0)" -m -s 0.1 -n 10 -rad 2 -dim 500 500 -dist-dim -5 5 -5 5 -l -sv -fixedpt 0 0
+;; alternate centers
+proto "(growf (= (mid) 0) 0)" -m -s 0.1 -n 10 -rad 2 -dim 500 500 -dist-dim -155 -145 -155 -145 -l -sv -fixedpt -150 -150
+proto "(growf (= (mid) 0) 0)" -m -s 0.1 -n 10 -rad 2 -dim 500 500 -dist-dim 45 55 145 155 -l -sv -fixedpt 50 150
+;; limiting with vasculature instead
+proto "(growf (= (mid) 0) 1)" -m -s 0.1 -n 10 -rad 2 -dim 500 500 -dist-dim -5 5 -45 -35 -l -sv -fixedpt 0 -40

@@ -1,0 +1,203 @@
+;;;; FIELDS
+proto -v -l -c "1"
+proto -v -l -c "(sense 1)"
+proto -v -l -c "(+ 1 (sense 1))"
+
+;;;; Space & Time operations
+proto -v -l -c "(rep t 0 (+ t (dt)))"
+proto -v -l -c "(all (def timer () (rep t 0 (+ t (dt)))) (timer))" -desired-period 0.3
+;; Note path system: timer is defined in $PROTO/lib/
+proto -v -l -c "(where (sense 1) (timer) 0)"
+proto -v -l -c "(red (any-hood (nbr (sense 1))))"
+proto -v -l -c "(min-hood+ (nbr-range))"
+
+;;;; Neighborhood chaining 
+; Simple distance estimate:
+proto -v -l -c "(red (rep d (inf) (mux (sense 1) 0 (min-hood (+ (nbr-range) (nbr d))))))"
+
+
+;;;; MOTION FROM VECTOR FIELDS
+; Calculate vectors... then feed them to the mov actuator
+proto -sv -l -act-err 0.1 "(mov (tup 2 1))"
+proto -sv -l -m -act-err 0.1 -3d "(mov (tup 0 0.5 3))"
+
+;; Correlated random motion
+(def wander ()
+  (let ((angle (rep theta (rnd 0 6.28) (+ theta (rnd -1 1)))))
+    (polar-to-rect (tup 1 angle))))
+proto -sv -l -m "(mov (wander))"
+
+;; Flocking
+(def flock (dir)
+  (rep v 
+   (tup 0 0 0)
+   (let ((d (normalize
+             (int-hood
+               (if (and (> (nbr-range) 0) (< (nbr-range) (* (comm-range) 0.333)))
+                   (* -1 (normalize (nbr-vec)))      ; repel nearby mass
+                   (if (> (nbr-range) (* (radio-range) 0.666))
+                       (* 0.2 (normalize (nbr-vec))) ; attract distant mass
+                       (normalize (nbr v))))))))     ; between, align vectors
+     (normalize (+ dir d)))))                        ; mix with preferred dir
+proto -n 500 -r 15 -sv -l -m -s 0.5 "(mov (flock (tup 0 0)))"
+; Adding guidance to attract them to the center:
+proto -n 500 -r 15 -sv -l -m -s 0.5 "(mov (flock (* -0.5 (sense 1) (normalize (coord)))))"
+
+
+;;;; SCALABILITY AND ROBUSTNESS
+;; Self-Healing Distance Estimate
+(def distance-to (source)
+  (1st 
+    (rep (tup d v)                      ; d = distance estimate, v = value rising
+         (tup (inf) 0)                  ; initial value
+      (mux source 
+        (tup 0 0)                       ; source is always distance zero
+        (mux (max-hood+                 ; test whether to apply constraint
+               (<= (+ (nbr d) (nbr-range) (* v (+ (nbr-lag) (dt)))) d))
+          (tup (min-hood+ (+ (nbr d) (nbr-range))) 0) ; apply triangle inequality
+          (let ((v0 (/ (comm-range) (* (dt) 12))))    ; rise rate based on info speed
+            (tup (+ d (* v0 (dt))) v0)))))))
+
+proto -n 1000 -s 0.1 -v -l "(red (distance-to (sense 1)))"
+; Change the source location: note the self-healing...
+
+;; Disperse
+(def disperse ()
+  (* (/ 1 (int-hood 1))                                ; normalize for neighborhood size
+     (int-hood (* (- (nbr-range) (* 0.9 (comm-range))) ; integrate distance from fixed-point...
+                  (normalize (nbr-vec))))))            ; ... times direction to neighbor
+proto -sv -l -m -act-err 0.1 "(mov (disperse))" -s 0.1 -dim 100 100 -r 20 -n 100 -w
+proto -sv -l -m -act-err 0.1 "(mov (disperse))" -s 0.1 -dim 100 100 -r 20 -n 300 -w
+proto -sv -l -m -act-err 0.1 "(mov (disperse))" -s 0.1 -dim 100 100 -r 10 -n 1000 -w
+; Draw a group of robots elsewhere: note the self-healing...
+
+; Dimension scaling: these execute in three dimensions as easily as in two
+proto "(mov (flock (tup 0 0 0)))" -dim 50 50 50 -r 15 -sv -m -n 200
+proto "(mov (disperse))" -dim 50 50 50 -r 15 -sv -m -w -n 200
+
+
+;;;; GEOMETRIC PROGRAMMING & COMPOSITION
+;; Functional composition
+(def dilate (source rad)
+  (< (distance-to source) rad))
+proto -v -l -n 100 -s 0.1 "(red (dilate (sense 1) 30))"
+proto -v -l -n 1000 -s 0.1 "(red (dilate (sense 1) 30))"
+; Note: scalability carries through composition
+
+(def broadcast (source sent)
+  (rep received sent
+    (mux source sent
+      (2nd (min-hood (nbr (tup (distance-to source) received)))))))
+proto -v -l -c -n 200 -s 0.1 "(red (broadcast (sense 1) (sense 2)))"
+
+;; Vector field = gradient of potential field
+(def grad (v)
+  (* (/ 1 (int-hood 1)) ; normalize over neighborhood
+     (int-hood (if (or (= (nbr-range) 0) (not (< (abs (- v (nbr v))) (inf))))
+                   (tup 0 0 0) ; ignore singularity
+                   (* (/ (- v (nbr v)) (nbr-range))
+                      (normalize (nbr-vec)))))))
+
+(def cluster-to (source)
+  (grad (distance-to source)))
+proto -n 500 -w -m -sv "(mov (mux (sense 1) (tup 0 0 0) (cluster-to (sense 1))))" -s 0.1
+
+
+(def distance (region1 region2)
+  (broadcast region2 (distance-to region1)))
+proto "(distance (sense 1) (sense 2))" -n 100 -v -r 15 -mag 2 -s 1
+; Note: self-healing carries through composition
+
+(def channel (src dst width)
+  (let* ((d     (distance src dst))
+         (trail (<= (+ (gradient src) (gradient dst)) (+ d 0.01)))) ;; float error
+    (dilate trail width)))
+
+proto -v -l -n 1000 -s 0.1 "(red (channel (sense 1) (sense 2) 10))"
+
+(def track (target dst coord)
+  (if (channel target dst 10)
+    (all (blue 1)
+     (mux dst (- (gradcast target coord) coord) (tup 0 0 0)))
+    (tup 0 0 0)))
+
+(def track-demo ()
+   (all 
+    (let ((mobile (once (< (rnd 0 1) 0.5))))
+      (mov (* (if (or (sense 1) (or (sense 2) mobile)) 0.01 0) (* 5 (wander)))))
+    (track (sense 1) (sense 2) (coord))))
+
+proto -n 150 -r 15 -sv -l -m -w -s 0.1 "(track-demo)"
+proto -n 500 -r 15 -sv -l -m -w -s 0.5 "(track-demo)"
+proto -n 2000 -r 5 -sv -l -m -w -s 1.0 "(track-demo)"
+
+
+;;;; HETEROGENEOUS BEHAVIOR
+;; Nav-grad
+(def share-distance-to (is-calculating source)
+  (let ((base (if is-calculating (distance-to source) (inf))))
+    (mux is-calculating base (min-hood (+ (nbr-range) (nbr base))))))
+
+(def nav-grad (is-mover source)
+  (let ((g (grad (share-distance-to (not is-mover) source))))
+    (mux (and is-mover (> (len g) 0)) (normalize g) (tup 0 0))))
+
+(def random-subset (p) (once (< (rnd 0 1) p)))
+proto -n 500 -r 15 -m -l -s 0.1 -sv "(mov (let ((which (random-subset 0.05))) (nav-grad (blue which) (sense 1))))" -led-stacking 2
+;; Failure due to neighborhood overloading:
+proto -n 500 -r 15 -m -l -s 0.1 -sv "(mov (let ((which (random-subset 0.2))) (nav-grad (blue which) (sense 1))))" -led-stacking 2
+;; Mixing dispersion and nav-grad:
+proto -n 500 -r 15 -m -l -s 0.1 -sv "(mov (let ((which (random-subset 0.2))) (+ (if which (disperse) (tup 0 0)) (nav-grad (blue which) (sense 1)))))" -led-stacking 2
+;; Note the non-uniform density...
+
+
+;; Multiple gradients as an approximation of dynamically allocated processes
+(def tricolor-nav (mover target satisfied?)
+  (letfed ((which (rndint 3) (mux satisfied? (mod (+ which (rndint 2) 1) 3) which)))
+   (let ((color (once (rndint 3))))
+     (elt (tup (nav-grad mover (muxand target (= color 0)))
+	       (nav-grad mover (muxand target (= color 1)))
+	       (nav-grad mover (muxand target (= color 2))))
+	  (probe which 0)))))
+
+(def flash-per-n (n)
+  (letfed ((v (rnd 0 n) (if (> v n) (- n (dt)) (if (> v (dt)) (- v (dt)) n))))
+    (= v n)))
+proto -l "(green (flash-per-n (if (sense 1) 1 20)))"
+
+proto -l -m -n 200 "(mov (tricolor-nav (sense 1) (< (mid) 10) (flash-per-n 100)))" -s 0.1
+
+;;;; CAPSTONE: DISASTER COORDINATION
+;; Medics go to victims (breaking symmetry w. tricolor), while maintaining
+;; contact with base stations
+
+;; victims randomly appear, and are treated by a medic staying nearby for 
+;; n seconds
+(def victim-model (medic)
+  (rep need 0
+       (mux medic 0
+	    (mux need
+		 (mux (any-hood (nbr medic)) (max 0 (- need (dt))) need)
+		 (if (< (rnd 0 1) 0.0002) (rnd 5 30) 0)))))
+
+;; Packets are sent best-effort from medics back to base station
+(def send-packets (src dst)
+  (let* ((routing (gradient dst))
+	 (route (mux dst -1 (2nd (min-hood (tup (nbr routing) (nbr (mid))))))))
+    (green (rep packet 0 (mux src (flash-per-n 10) 
+			      (any-hood (and (nbr packet) (= (mid) (nbr route)))))))))
+
+
+(def falling-edge (v)
+  (muxand (not v) (delay v)))
+
+(def medic-coord ()
+  (let* ((medic (sense 1))
+	 (base (sense 2))
+	 (victim (blue (> (victim-model medic) 0))))
+    (all
+     (send-packets medic base)
+     (+ (tricolor-nav medic victim (any-hood (nbr (falling-edge victim))))
+	(if medic (disperse) (if (or victim base) (tup 0 0 0) (* 0.1 (wander))))))))
+
+proto "(* 5 (mov (medic-coord)))" -m -l -n 500 -dim 150 150 -s 0.1 -sv

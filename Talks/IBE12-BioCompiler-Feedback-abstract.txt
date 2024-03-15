@@ -1,0 +1,10 @@
+Title: Automated Design of Synthetic Biology Feedback Circuits
+Authors: Jacob Beal, Aaron Adler
+
+The Proto BioCompiler is a tool for automated design of genetic regulatory networks, which forms the top end of the TASBE tool-chain (an end-to-end design automation system which stretches from high-level programs to in vivo execution in living cells).
+
+A programmer can use the Proto high-level language to specify a desired computation to be executed by an aggregate of cells (e.g. a colony, biofilm, or multi-cellular organism).  The Proto BioCompiler then transforms that aggregate behavior first into a specification for the behavior of individual cells, then uses a motif-based method to automatically design a genetic regulatory network (GRN) that implements that behavior.  Finally, the GRN is optimized to reduce its complexity and metabolic burden.
+
+Previously, the Proto BioCompiler handled only feed-forward boolean logic computations and used a handful of optimizations imported from electronic computers.  We have now improved this tool with the addition of a new biologically-inspired construct for uninitialized feedback loops, and with new optimizations, including two that take advantage of the special properties of computation on GRNs.  Together, these improvements allow our improved BioCompiler to generate GRN designs for feedback and memory computations.
+
+We tested the improvements to the BioCompiler by applying it to high-level programs for two common building block circuits: a positive-feedback memory and a toggle switch.  In order that the inputs and outputs should be composable into larger circuits, both designs were driven by transcription factors, rather than by small-molecule inducers.  In both cases, the our improved BioCompiler was able to produce a GRN design implementing the desired functionality, and to optimize the design until it was homologous to that produced by human synthetic biology experts.
